@@ -1,0 +1,871 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prospecto Patronum</title>
+<link rel="icon" type="image/svg+xml" href="/logo.svg">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.css" integrity="sha384-Nq6PQ+9vJPvw7U/VfDELyrWoGQMsy0gi6QShhaSrGzkpF5KkM40csg2leky+YMTd" crossorigin="anonymous">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<!-- shortcut: Tailwind par CDN (pas de build). Passer au CLI Tailwind si l'outil sort de l'usage interne. -->
+<script src="https://cdn.tailwindcss.com"></script>
+<script>tailwind.config = { theme: { extend: { fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'] } } } };</script>
+<style>
+/* Leaflet impose sa police, sa couleur de lien et ses marges : on les neutralise pour la fiche en popup. */
+/* Les classes d'affichage Tailwind (flex…) l'emportent sinon sur l'attribut hidden. */
+[hidden] { display: none !important; }
+/* Largeur du panneau sur ordinateur : réglable à la souris, les pastilles de la carte suivent. */
+:root { --panel: 420px; }
+.leaflet-container { font: inherit; }
+.leaflet-popup-content { margin: 14px; }
+.leaflet-popup-content a { color: #334155; }
+/* Sonar pendant un scan : anneaux qui partent du centre de la zone. */
+.sonar { transform-box: fill-box; transform-origin: center; animation: sonar 2.4s cubic-bezier(.2,.6,.4,1) infinite backwards; }
+@keyframes sonar { from { transform: scale(.05); opacity: .9; } to { transform: scale(1); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .sonar { animation-duration: 6s; } }
+</style>
+</head>
+<body class="h-screen overflow-hidden bg-slate-950 font-sans text-slate-900 antialiased">
+
+<div id="map" class="absolute inset-0 z-0"></div>
+
+<!-- pointer-events-none : entre les pastilles, le clic atteint la carte. -->
+<div id="families" role="group" aria-label="Types de commerce affichés" class="pointer-events-none absolute left-3 right-16 top-3 z-10 flex gap-1.5 overflow-x-auto pb-1 md:left-[calc(var(--panel)+32px)] md:flex-wrap"></div>
+
+<aside id="panel" class="absolute inset-x-3 bottom-3 z-10 flex max-h-[62vh] flex-col overflow-hidden rounded-3xl border border-white/60 bg-white/90 shadow-2xl shadow-slate-900/20 backdrop-blur-xl md:inset-x-auto md:bottom-4 md:left-4 md:top-4 md:max-h-none md:w-[var(--panel)]">
+  <div id="resizer" role="separator" aria-orientation="vertical" aria-label="Largeur du panneau (flèches gauche et droite)" title="Glisser pour élargir le panneau" tabindex="0" class="absolute inset-y-8 right-0 z-10 hidden w-1.5 cursor-col-resize touch-none rounded-full transition hover:bg-indigo-300 focus:bg-indigo-400 focus:outline-none md:block"></div>
+
+  <header class="flex items-center gap-3 px-5 pt-5">
+    <img src="/logo.svg" alt="" width="40" height="40" class="h-10 w-10 shrink-0 rounded-xl shadow-lg shadow-indigo-500/30">
+    <div>
+      <h1 class="text-base font-bold leading-tight tracking-tight">Prospecto Patronum</h1>
+      <p class="text-xs text-slate-500">Trouve les commerces sans site internet</p>
+    </div>
+  </header>
+
+  <form id="form" class="space-y-3 px-5 pb-4 pt-5">
+    <div class="flex gap-2">
+      <label for="address" class="sr-only">Adresse</label>
+      <div class="relative min-w-0 flex-1">
+      <ul id="suggest" role="listbox" aria-label="Suggestions d'adresses" hidden class="absolute inset-x-0 top-full z-[1100] mt-1 overflow-hidden rounded-xl border border-slate-200 bg-white py-1 text-sm shadow-lg"></ul>
+      <input type="text" id="address" autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="suggest" aria-expanded="false" placeholder="Adresse : 12 rue de la Paix, Lyon" class="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm shadow-sm outline-none transition placeholder:text-slate-400 focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/15">
+      </div>
+      <button type="button" id="locate" title="Placer cette adresse sur la carte" aria-label="Placer cette adresse sur la carte" class="grid w-11 shrink-0 place-items-center rounded-xl bg-slate-900 text-white transition hover:bg-slate-700 focus:outline-none focus:ring-4 focus:ring-slate-900/20"><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-6-5.3-6-10a6 6 0 1 1 12 0c0 4.7-6 10-6 10z"/><circle cx="12" cy="11" r="2"/></svg></button>
+    </div>
+    <fieldset id="zoneBox">
+      <legend class="sr-only">Zone à scanner</legend>
+      <div class="grid grid-cols-3 gap-2">
+        <label class="cursor-pointer">
+          <input type="radio" name="zone" value="radius" checked class="peer sr-only">
+          <span class="flex flex-col items-center gap-1 rounded-xl border border-slate-200 bg-white py-2.5 text-xs font-semibold text-slate-600 shadow-sm transition hover:border-indigo-300 peer-checked:border-indigo-500 peer-checked:bg-indigo-50 peer-checked:text-indigo-700 peer-focus-visible:ring-4 peer-focus-visible:ring-indigo-500/20"><svg aria-hidden="true" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="1.2" fill="currentColor"/><path d="M12 12h8.5"/></svg>Rayon</span>
+        </label>
+        <label class="cursor-pointer">
+          <input type="radio" name="zone" value="street" class="peer sr-only">
+          <span class="flex flex-col items-center gap-1 rounded-xl border border-slate-200 bg-white py-2.5 text-xs font-semibold text-slate-600 shadow-sm transition hover:border-indigo-300 peer-checked:border-indigo-500 peer-checked:bg-indigo-50 peer-checked:text-indigo-700 peer-focus-visible:ring-4 peer-focus-visible:ring-indigo-500/20"><svg aria-hidden="true" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3 5 21M16 3l3 18M12 4v3M12 10.5v3M12 17v3"/></svg>Rue</span>
+        </label>
+        <label class="cursor-pointer">
+          <input type="radio" name="zone" value="city" class="peer sr-only">
+          <span class="flex flex-col items-center gap-1 rounded-xl border border-slate-200 bg-white py-2.5 text-xs font-semibold text-slate-600 shadow-sm transition hover:border-indigo-300 peer-checked:border-indigo-500 peer-checked:bg-indigo-50 peer-checked:text-indigo-700 peer-focus-visible:ring-4 peer-focus-visible:ring-indigo-500/20"><svg aria-hidden="true" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18M5 21V10l4-2.5V21M9 21V4h7v17M16 21v-9h3v9M11.5 8h2M11.5 12h2M11.5 16h2"/></svg>Ville</span>
+        </label>
+      </div>
+    </fieldset>
+    <div id="radiusBox" class="flex items-center gap-3">
+      <label for="radius" class="sr-only">Rayon</label>
+      <input type="range" id="radius" min="100" max="5000" step="100" value="500" class="min-w-0 flex-1 accent-indigo-600">
+      <output id="radiusOut" class="w-16 shrink-0 rounded-full bg-indigo-50 py-0.5 text-center text-xs font-semibold text-indigo-700">500 m</output>
+    </div>
+    <button id="scan" disabled class="w-full rounded-xl bg-gradient-to-r from-indigo-600 to-fuchsia-600 py-3 text-sm font-semibold text-white shadow-lg shadow-indigo-600/25 transition hover:brightness-110 focus:outline-none focus:ring-4 focus:ring-indigo-500/30 disabled:cursor-not-allowed disabled:from-slate-300 disabled:to-slate-300 disabled:shadow-none">Lancer le scan</button>
+  </form>
+
+  <div class="flex items-center justify-between gap-3 border-t border-slate-100 px-5 py-3">
+    <p id="status" role="status" class="text-xs text-slate-500">Choisis un point pour commencer.</p>
+    <div class="flex shrink-0 gap-1.5">
+    <button type="button" id="verifyAll" hidden title="Chercher un site pour les commerces affichés pas encore vérifiés" class="inline-flex items-center gap-1.5 shrink-0 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm transition hover:border-indigo-300 hover:text-indigo-700 disabled:opacity-60"><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 4.5 6v5.5c0 4.6 3.2 8.4 7.5 9.5 4.3-1.1 7.5-4.9 7.5-9.5V6L12 3z"/><path d="m8.8 12 2.2 2.2 4.2-4.4"/></svg>Vérifier</button>
+    <button type="button" id="csv" hidden title="Exporter en CSV les commerces de la vue" class="inline-flex items-center gap-1.5 shrink-0 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm transition hover:border-indigo-300 hover:text-indigo-700"><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 11l5 5 5-5M5 20h14"/></svg>La vue</button>
+    </div>
+  </div>
+
+  <div class="flex gap-1.5 px-3 pb-2">
+    <label for="search" class="sr-only">Chercher dans les résultats</label>
+    <input type="search" id="search" placeholder="Chercher : nom, rue, type…" class="min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-sm shadow-sm outline-none transition placeholder:text-slate-400 focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/15">
+    <div id="needs" role="group" aria-label="N'afficher que les commerces avec" class="flex shrink-0 gap-1"></div>
+  </div>
+
+  <ul id="list" class="flex-1 space-y-2 overflow-y-auto px-3 pb-3"></ul>
+</aside>
+
+<div class="pointer-events-none absolute right-3 top-24 z-10 flex flex-col items-end gap-2 [&>*]:pointer-events-auto">
+  <div role="group" aria-label="Outil de la carte" class="flex flex-col overflow-hidden rounded-xl border border-slate-200 bg-white/95 shadow-md">
+    <button type="button" id="pan" aria-pressed="true" title="Déplacer la carte" aria-label="Déplacer la carte" class="grid h-10 w-10 place-items-center text-slate-600 transition hover:bg-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500 aria-pressed:bg-indigo-600 aria-pressed:text-white"><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2"/><path d="M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2"/><path d="M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/></svg></button>
+    <button type="button" id="draw" aria-pressed="false" title="Tracer la zone : clic pour poser le point, glisser pour régler le rayon" aria-label="Tracer la zone à scanner" class="grid h-10 w-10 place-items-center text-slate-600 transition hover:bg-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500 aria-pressed:bg-indigo-600 aria-pressed:text-white border-t border-slate-200"><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5" stroke-dasharray="3 3.2"/><path d="M12 8.5v7M8.5 12h7"/></svg></button>
+  </div>
+  <details class="relative rounded-xl border border-slate-200 bg-white/95 text-xs text-slate-700 shadow-md">
+    <summary title="Annotations de la carte" aria-label="Annotations de la carte" class="ml-auto grid h-10 w-10 cursor-pointer list-none place-items-center rounded-xl text-slate-600 hover:bg-slate-100 [&::-webkit-details-marker]:hidden"><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 9 5-9 5-9-5 9-5zM3 12.5l9 5 9-5M3 16.5l9 5 9-5"/></svg></summary>
+    <div id="mapLabels" class="absolute right-full top-0 mr-2 rounded-xl border border-slate-200 bg-white/95 pt-3 shadow-md w-max space-y-1.5 px-3 pb-3 font-medium"></div>
+  </details>
+  <details class="relative rounded-xl border border-slate-200 bg-white/95 text-xs text-slate-700 shadow-md">
+    <summary title="Piloter depuis Claude (MCP)" aria-label="Documentation MCP" class="ml-auto grid h-10 w-10 cursor-pointer list-none place-items-center rounded-xl text-[11px] font-bold text-slate-600 hover:bg-slate-100 [&::-webkit-details-marker]:hidden">MCP</summary>
+    <div class="absolute right-full top-0 mr-2 rounded-xl border border-slate-200 bg-white/95 pt-3 shadow-md w-72 space-y-2 px-3 pb-3">
+      <p class="font-semibold text-slate-900">Piloter Prospecto depuis Claude</p>
+      <p>Le serveur MCP passe par cette appli : garde <code>npm start</code> lancé. Puis, depuis le dossier du projet :</p>
+      <pre class="overflow-x-auto rounded-lg bg-slate-900 p-2 text-[11px] text-slate-100">claude mcp add prospecto -- node "$PWD/mcp.js"</pre>
+      <p>Autre port ou machine : variable <code>PROSPECTO_URL</code> (défaut <code>http://127.0.0.1:3000</code>).</p>
+      <ul class="list-disc space-y-0.5 pl-4">
+        <li><b>scan_city</b> : commune ou rue</li>
+        <li><b>scan_radius</b> : cercle autour d'un point</li>
+        <li><b>stats</b> : contenu de la base</li>
+        <li><b>export</b> : CSV filtré (<code>save_to</code>)</li>
+        <li><b>list_places</b> : prospects d'une zone</li>
+        <li><b>check_place</b> : revérifie l'absence de site</li>
+      </ul>
+    </div>
+  </details>
+  <button type="button" id="exportOpen" class="inline-flex items-center gap-2 rounded-xl bg-slate-900 px-3.5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-slate-900/30 transition hover:bg-slate-700 focus:outline-none focus:ring-4 focus:ring-slate-900/20 md:fixed md:bottom-8 md:right-3"><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 11l5 5 5-5M5 20h14"/></svg>Exporter</button>
+</div>
+
+
+<dialog id="exportDialog" aria-labelledby="exportTitle" class="w-[min(92vw,420px)] rounded-3xl p-0 shadow-2xl backdrop:bg-slate-900/40">
+  <form method="dialog" class="space-y-4 p-5">
+    <div>
+      <h2 id="exportTitle" class="text-base font-bold tracking-tight">Exporter les commerces enregistrés</h2>
+      <p class="text-xs text-slate-500">Seuls les secteurs déjà scannés sont proposés.</p>
+    </div>
+    <div>
+      <label for="exRegion" class="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">Région</label>
+      <select id="exRegion" class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm shadow-sm outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/15"></select>
+    </div>
+    <div>
+      <label for="exDept" class="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">Département</label>
+      <select id="exDept" class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm shadow-sm outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/15"></select>
+    </div>
+    <div>
+      <label for="exCity" class="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">Ville</label>
+      <select id="exCity" class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm shadow-sm outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/15 disabled:bg-slate-50 disabled:text-slate-400"></select>
+    </div>
+    <fieldset>
+      <legend class="mb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500">Seulement avec</legend>
+      <div id="exHas" class="flex flex-wrap gap-x-3 gap-y-1.5"></div>
+    </fieldset>
+    <fieldset>
+      <legend class="mb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500">Types de commerce</legend>
+      <div id="exFamilies" class="grid grid-cols-2 gap-x-3 gap-y-1.5"></div>
+    </fieldset>
+    <div class="flex items-center justify-between gap-3 border-t border-slate-100 pt-4">
+      <p id="exCount" role="status" class="text-xs text-slate-500"></p>
+      <div class="flex shrink-0 gap-2">
+        <button class="rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300">Annuler</button>
+        <button type="button" id="exGo" class="rounded-xl bg-gradient-to-r from-indigo-600 to-fuchsia-600 px-3.5 py-2 text-sm font-semibold text-white transition hover:brightness-110 disabled:cursor-not-allowed disabled:from-slate-300 disabled:to-slate-300">Télécharger le CSV</button>
+      </div>
+    </div>
+  </form>
+</dialog>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.js" integrity="sha384-GfxBM9x46BaAFxtCq39Fxir8fNZ4VDnwgfi6Kzi5/F1tAFsm0amuuV8kd+Pxzuf/" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@maplibre/maplibre-gl-leaflet@0.1.4/leaflet-maplibre-gl.js" integrity="sha384-tXYNKOHx4T02jMP7YYCtBxPIv1B5gaA5mcVPBzqMp6d7VzWzxJgI2aWF/nJLrQdS" crossorigin="anonymous"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const el = (tag, cls, text) => { const n = document.createElement(tag); n.className = cls; if (text) n.textContent = text; return n; };
+
+// Dernière vue mémorisée : au rechargement on revient au même endroit, les points viennent de la base.
+let view = { lat: 46.6, lng: 2.4, zoom: 6 };
+try {
+  const v = JSON.parse(localStorage.getItem('view'));
+  if ([v?.lat, v?.lng, v?.zoom].every(Number.isFinite)) view = v; // une vue abîmée bloquerait toute la page
+} catch { /* stockage indisponible : vue par défaut */ }
+// Réglages mémorisés d'une visite à l'autre : filtres, zone, rayon, point posé, choix de l'export.
+let prefs = {};
+try { prefs = JSON.parse(localStorage.getItem('prefs')) || {}; } catch { /* stockage indisponible : réglages par défaut */ }
+function remember(patch) {
+  Object.assign(prefs, patch);
+  try { localStorage.setItem('prefs', JSON.stringify(prefs)); } catch { /* réglage non mémorisé, sans gravité */ }
+}
+// preferCanvas : des centaines de points restent fluides.
+const map = L.map('map', { zoomControl: false, preferCanvas: true, maxZoom: 19 }).setView([view.lat, view.lng], view.zoom);
+L.control.zoom({ position: 'topright' }).addTo(map);
+// Fond vectoriel (OpenFreeMap, sans clé) : zoom fluide, et chaque famille d'annotations se masque à part.
+const base = L.maplibreGL({ style: 'https://tiles.openfreemap.org/styles/liberty' }).addTo(map);
+// Nom, affiché par défaut, couches du style concernées (par leur identifiant).
+const MAP_LABELS = [
+  ['Villes', true, /^label_(city|town)/],
+  ['Villages', true, /^label_village/], // La Brède et la plupart des communes sont des « villages » dans OpenStreetMap
+  ['Lieux-dits et quartiers', false, /^label_other/],
+  ['Rues et routes', true, /^(highway-|road_shield)/],
+  ['Lieux et enseignes', false, /^(poi_|airport)/],
+  ['Rivières et lacs', false, /^water/],
+];
+let labelPrefs = {};
+try { labelPrefs = JSON.parse(localStorage.getItem('mapLabels')) || {}; } catch { /* stockage indisponible : réglages par défaut */ }
+base.getMaplibreMap().on('style.load', () => {
+  const gl = base.getMaplibreMap();
+  $('mapLabels').replaceChildren(...MAP_LABELS.map(([name, byDefault, ids]) => {
+    const box = el('input', 'accent-indigo-600');
+    box.type = 'checkbox';
+    box.checked = labelPrefs[name] ?? byDefault;
+    box.onchange = () => {
+      for (const l of gl.getStyle().layers) if (ids.test(l.id)) gl.setLayoutProperty(l.id, 'visibility', box.checked ? 'visible' : 'none');
+      labelPrefs[name] = box.checked;
+      try { localStorage.setItem('mapLabels', JSON.stringify(labelPrefs)); } catch { /* réglage non mémorisé, sans gravité */ }
+    };
+    box.onchange();
+    const label = el('label', 'flex items-center gap-1.5 whitespace-nowrap');
+    label.append(box, name);
+    return label;
+  }));
+});
+const markers = L.layerGroup().addTo(map);
+let center = null, circle = null, places = [];
+
+let truncated = false;
+
+const COLORS = {
+  food_and_drink: '#dc2626', shopping: '#2563eb', lifestyle_services: '#db2777', services_and_business: '#78350f',
+  health_care: '#16a34a', lodging: '#7c3aed', travel_and_transportation: '#ea580c', sports_and_recreation: '#84cc16',
+  arts_and_entertainment: '#c026d3', education: '#0891b2', community_and_government: '#eab308',
+  cultural_and_historic: '#0f766e', geographic_entities: '#1e3a8a', other: '#64748b',
+};
+const fam = (p) => (p.family in COLORS ? p.family : 'other');
+const dot = (f) => { const d = el('span', 'inline-block h-2.5 w-2.5 shrink-0 rounded-full'); d.style.background = COLORS[f]; return d; };
+
+// Filtre d'affichage : familles masquées sur la carte, dans la liste et dans l'export.
+const hidden = new Set(prefs.hidden);
+const CHIP = 'pointer-events-auto inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-slate-200 bg-white/95 px-2.5 py-1 text-xs font-semibold text-slate-700 shadow-md transition hover:border-indigo-300 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 aria-[pressed=false]:bg-white/70 aria-[pressed=false]:text-slate-400 aria-[pressed=false]:line-through';
+let labels = { other: 'Autre' };
+fetch('/api/families').then((r) => r.json()).then((all) => { labels = { ...all, ...labels }; }).catch(() => {}).finally(refresh);
+
+// Chargement à la demande : seuls les commerces de la zone visible sont lus dans la base, à chaque déplacement.
+let seq = 0;
+async function refresh() {
+  const n = ++seq;
+  try {
+    const res = await fetch('/api/places?bbox=' + map.getBounds().toBBoxString());
+    // Un plantage du serveur renvoie une page HTML, pas du JSON.
+    const data = await res.json().catch(() => ({ error: 'Le serveur a renvoyé une erreur, regarde son terminal.' }));
+    if (n !== seq) return; // la carte a encore bougé : cette réponse est périmée
+    if (!res.ok) throw new Error(data.error);
+    places = data.places;
+    truncated = data.truncated;
+    chips();
+  } catch (err) {
+    if (n === seq) setStatus(err.message || 'Lecture de la base impossible.', true);
+  }
+}
+map.on('moveend', () => {
+  refresh();
+  try { localStorage.setItem('view', JSON.stringify({ ...map.getCenter(), zoom: map.getZoom() })); } catch { /* vue non mémorisée, sans gravité */ }
+});
+
+// Pastilles reconstruites à chaque chargement : seulement les familles présentes dans la vue, avec leur nombre de commerces.
+function chips() {
+  const count = {};
+  for (const p of places) count[fam(p)] = (count[fam(p)] || 0) + 1;
+  const fams = Object.keys(COLORS).filter((f) => count[f]);
+  const allOn = () => fams.every((f) => !hidden.has(f));
+  const sync = () => {
+    for (const chip of $('families').children) chip.setAttribute('aria-pressed', chip.dataset.fam ? !hidden.has(chip.dataset.fam) : allOn());
+    remember({ hidden: [...hidden] });
+    render();
+  };
+  $('families').replaceChildren();
+  if (fams.length > 1) {
+    const allChip = el('button', CHIP, 'Tout');
+    allChip.type = 'button';
+    allChip.onclick = () => { const on = allOn(); fams.forEach((f) => (on ? hidden.add(f) : hidden.delete(f))); sync(); };
+    $('families').append(allChip);
+  }
+  for (const f of fams) {
+    const chip = el('button', CHIP);
+    chip.type = 'button';
+    chip.dataset.fam = f;
+    chip.append(dot(f), `${labels[f] ?? f} ${count[f]}`);
+    chip.onclick = () => { hidden.has(f) ? hidden.delete(f) : hidden.add(f); sync(); };
+    $('families').append(chip);
+  }
+  sync();
+}
+
+// Le panneau recouvre la carte : on décale le cadrage (et les popups) pour rester dans la zone visible.
+const pad = () => (innerWidth >= 768 ? { tl: [$('panel').offsetWidth + 30, 60], br: [20, 20] } : { tl: [10, 60], br: [10, innerHeight * 0.62] });
+const fit = () => map.fitBounds(circle.getBounds(), { paddingTopLeft: pad().tl, paddingBottomRight: pad().br });
+
+// Ligne de statut : résumé de la vue et consignes. Les erreurs partent en toast, comme les résultats d'actions.
+function setStatus(text, error) {
+  if (error) return toast(text, 'error');
+  $('status').textContent = text;
+  $('status').classList.toggle('text-rose-600', !!error);
+  $('status').classList.toggle('text-slate-500', !error);
+}
+
+// Notifications : toast(texte, genre) → { update, close }. « loading » reste affiché jusqu'à update ou close.
+const TOAST = {
+  info: ['border-slate-200 text-slate-700', '<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.5v.5"/>'],
+  success: ['border-emerald-200 text-emerald-800', '<circle cx="12" cy="12" r="9"/><path d="m8 12.5 2.7 2.7L16 9.8"/>'],
+  error: ['border-rose-200 text-rose-700', '<circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5M12 16.5v.5"/>'],
+  loading: ['border-indigo-200 text-indigo-700', '<circle cx="12" cy="12" r="9" stroke-dasharray="42 15"/>'],
+};
+function toast(text, kind = 'info') {
+  const box = el('div', 'pointer-events-auto flex w-full max-w-sm items-start gap-2 rounded-xl border bg-white px-3 py-2.5 text-sm font-medium shadow-lg transition duration-300');
+  box.setAttribute('role', 'status');
+  let timer;
+  const close = () => { box.style.opacity = '0'; setTimeout(() => box.remove(), 300); };
+  const update = (t, k = kind) => {
+    kind = k;
+    box.className = box.className.replace(/border-\S+-200 text-\S+/g, '').trim() + ' ' + TOAST[k][0];
+    box.innerHTML = `<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mt-px shrink-0${k === 'loading' ? ' animate-spin' : ''}">${TOAST[k][1]}</svg>`;
+    box.append(el('span', 'min-w-0 break-words', t));
+    if (k !== 'loading') {
+      const x = el('button', 'ml-auto shrink-0 rounded px-1 text-slate-400 hover:text-slate-700', '×');
+      x.type = 'button'; x.setAttribute('aria-label', 'Fermer'); x.onclick = close;
+      box.append(x);
+    }
+    clearTimeout(timer);
+    if (k !== 'loading') timer = setTimeout(close, k === 'error' ? 8000 : 5000);
+  };
+  update(text, kind);
+  $('toasts').append(box);
+  return { update, close };
+}
+
+// Bouton de vérification d'une fiche : roue qui tourne pendant la vérification (aussi en lot, via data-verify).
+const SPIN = '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" class="block animate-spin"><circle cx="12" cy="12" r="9" stroke-dasharray="42 15"/></svg>';
+const checking = new Set(); // ids en cours de vérification : la roue survit aux re-rendus de refresh()
+const spin = (b) => { b.disabled = true; b.innerHTML = SPIN; b.classList.add('text-indigo-600'); };
+const spinVerify = (id) => document.querySelectorAll(`[data-verify="${CSS.escape(id)}"]`).forEach(spin);
+
+// geo : commune et rue du point (données du géocodeur), nécessaires aux zones « rue » et « ville ».
+let geo = null;
+const sonarRenderer = L.svg();
+const areaLayer = L.geoJSON(null, { style: { color: '#4f46e5', weight: 2, fillColor: '#6366f1', fillOpacity: 0.08 }, interactive: false }).addTo(map);
+
+function setCenter(latlng, props, reframe = true) {
+  center = latlng;
+  geo = props ? { citycode: props.citycode, city: props.city, street: props.street } : null;
+  if (!circle) circle = L.circle(latlng, { radius: +$('radius').value, color: '#4f46e5', weight: 2, fillColor: '#6366f1', interactive: false }).addTo(map);
+  circle.setLatLng(latlng);
+  applyZone();
+  if (reframe) fit();
+  $('scan').disabled = false;
+  savePoint();
+}
+const savePoint = () => remember({ point: { lat: center.lat, lng: center.lng, geo, address: $('address').value } });
+
+// Le cercle et le curseur de rayon n'ont de sens que pour la zone « rayon ».
+function applyZone() {
+  const radius = $('form').zone.value === 'radius';
+  $('radiusBox').hidden = !radius;
+  circle?.setStyle({ opacity: radius ? 1 : 0, fillOpacity: radius ? 0.12 : 0 });
+}
+$('zoneBox').onchange = () => { applyZone(); remember({ zone: $('form').zone.value }); };
+
+function showArea(area) {
+  areaLayer.clearLayers();
+  if (!area) return;
+  areaLayer.addData(area);
+  map.fitBounds(areaLayer.getBounds(), { paddingTopLeft: pad().tl, paddingBottomRight: pad().br });
+}
+
+function setRadius(r, reframe = true) {
+  $('radius').value = r;
+  r = +$('radius').value; // le curseur borne et arrondit
+  $('radiusOut').textContent = r >= 1000 ? (r / 1000).toLocaleString('fr-FR') + ' km' : r + ' m';
+  if (circle) { circle.setRadius(r); if (reframe) fit(); }
+  remember({ radius: r });
+}
+$('radius').oninput = () => setRadius(+$('radius').value);
+
+// Par défaut la carte se déplace à la main. Le tracé est un mode à part : un clic pose le point,
+// maintenir et glisser règle le rayon. Il se coupe tout seul une fois la zone posée.
+let drawing = false, drawStart = null;
+function setDraw(on) {
+  drawing = on;
+  drawStart = null;
+  $('draw').setAttribute('aria-pressed', on);
+  $('pan').setAttribute('aria-pressed', !on);
+  map.getContainer().style.cursor = on ? 'crosshair' : '';
+  map.dragging[on ? 'disable' : 'enable']();
+  if (on) setStatus('Clique pour poser le point, glisse pour régler le rayon.');
+}
+$('draw').onclick = () => setDraw(!drawing);
+$('pan').onclick = () => setDraw(false);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && drawing) setDraw(false); });
+
+map.on('mousedown', (e) => {
+  if (!drawing) return;
+  drawStart = e.latlng;
+  setCenter(drawStart, null, false);
+});
+map.on('mousemove', (e) => {
+  // En dessous de 50 m de glissé, c'est un simple clic : le rayon du curseur est gardé.
+  if (drawStart && $('form').zone.value === 'radius' && drawStart.distanceTo(e.latlng) >= 50) setRadius(drawStart.distanceTo(e.latlng), false);
+});
+// mouseup termine un tracé à la souris ; click couvre le simple toucher sur mobile.
+map.on('mouseup click', async (e) => {
+  if (!drawing) return;
+  const at = drawStart ?? e.latlng;
+  setDraw(false);
+  setCenter(at);
+  setStatus('Point placé. Lance le scan.');
+  $('address').value = ''; // l'adresse du point précédent ne doit pas rester si le géocodeur ne répond pas
+  // Adresse la plus proche du point : elle donne la rue et la commune.
+  try {
+    const res = await fetch(`https://data.geopf.fr/geocodage/reverse?limit=1&lon=${at.lng}&lat=${at.lat}`);
+    const props = (await res.json()).features?.[0]?.properties;
+    if (!props || center !== at) return; // un autre point a été posé entre-temps
+    geo = { citycode: props.citycode, city: props.city, street: props.street };
+    $('address').value = props.label;
+    savePoint();
+  } catch { /* sans géocodeur, seul le scan par rayon reste possible */ }
+});
+
+function place(f) {
+  suggest([]);
+  $('address').value = f.properties.label;
+  setCenter(L.latLng(f.geometry.coordinates[1], f.geometry.coordinates[0]), f.properties);
+  setStatus('Point placé. Lance le scan.');
+}
+
+// Les résultats proches du centre de la carte passent devant.
+async function geocode(q, limit) {
+  const c = map.getCenter();
+  const res = await fetch(`https://data.geopf.fr/geocodage/search?limit=${limit}&lat=${c.lat}&lon=${c.lng}&q=` + encodeURIComponent(q));
+  return (await res.json()).features ?? [];
+}
+
+// Le géocodeur complète mal un nom de ville tapé à moitié : les communes viennent de geo.api.gouv.fr, les plus proches de la carte d'abord.
+async function communes(q) {
+  const res = await fetch('https://geo.api.gouv.fr/communes?fields=nom,code,codesPostaux,centre&limit=50&nom=' + encodeURIComponent(q));
+  const c = map.getCenter();
+  return (await res.json())
+    .map((m) => ({ geometry: m.centre, properties: { label: `${m.nom} ${m.codesPostaux[0] ?? ''}`.trim(), type: 'municipality', citycode: m.code, city: m.nom } }))
+    .sort((x, y) => c.distanceTo(L.latLng(x.geometry.coordinates[1], x.geometry.coordinates[0])) - c.distanceTo(L.latLng(y.geometry.coordinates[1], y.geometry.coordinates[0])))
+    .slice(0, 3);
+}
+
+async function locate() {
+  const q = $('address').value.trim();
+  if (q.length < 3) return;
+  try {
+    const [f] = await geocode(q, 1);
+    if (!f) return setStatus('Adresse introuvable.', true);
+    place(f);
+  } catch { setStatus('Le géocodage ne répond pas.', true); }
+}
+$('locate').onclick = locate;
+
+// Panneau redimensionnable : glisser la poignée du bord droit, ou flèches gauche/droite au clavier.
+function setPanel(w) {
+  w = Math.round(Math.max(320, Math.min(w, innerWidth - 360)));
+  document.documentElement.style.setProperty('--panel', w + 'px');
+  remember({ panel: w });
+}
+if (prefs.panel) setPanel(prefs.panel);
+$('resizer').onpointerdown = (e) => {
+  e.preventDefault();
+  $('resizer').setPointerCapture(e.pointerId);
+  // 16 px : marge gauche du panneau.
+  $('resizer').onpointermove = (m) => setPanel(m.clientX - 16);
+};
+$('resizer').onpointerup = $('resizer').onpointercancel = () => { $('resizer').onpointermove = null; };
+$('resizer').onkeydown = ({ key }) => {
+  if (key === 'ArrowLeft' || key === 'ArrowRight') setPanel($('panel').offsetWidth + (key === 'ArrowRight' ? 20 : -20));
+};
+
+// Au rechargement : zone, rayon et point posé reviennent comme on les a laissés.
+if (prefs.zone) $('form').zone.value = prefs.zone;
+if (prefs.radius) setRadius(prefs.radius, false);
+if (prefs.point) {
+  $('address').value = prefs.point.address;
+  setCenter(L.latLng(prefs.point.lat, prefs.point.lng), prefs.point.geo, false);
+}
+applyZone();
+
+// Autocomplétion : villes, rues et adresses proposées pendant la frappe.
+const KINDS = { municipality: 'Ville', street: 'Rue', locality: 'Lieu-dit', housenumber: 'Adresse' };
+let found = [], active = -1, typing;
+function suggest(features) {
+  found = features; active = -1;
+  $('suggest').replaceChildren(...features.map((f, i) => {
+    const li = el('li', 'flex cursor-pointer items-center justify-between gap-2 px-3 py-2 text-slate-700 hover:bg-indigo-50 aria-selected:bg-indigo-50');
+    li.id = 'suggest-' + i;
+    li.setAttribute('role', 'option');
+    li.append(el('span', 'min-w-0 truncate', f.properties.label), el('span', 'shrink-0 text-[11px] font-semibold text-slate-400', KINDS[f.properties.type]));
+    // mousedown passe avant le blur du champ, qui ferme la liste.
+    li.onmousedown = (e) => { e.preventDefault(); place(f); };
+    return li;
+  }));
+  $('suggest').hidden = !features.length;
+  $('address').setAttribute('aria-expanded', !!features.length);
+  $('address').removeAttribute('aria-activedescendant');
+}
+$('address').oninput = () => {
+  clearTimeout(typing);
+  const q = $('address').value.trim();
+  if (q.length < 3) return suggest([]);
+  typing = setTimeout(async () => {
+    try {
+      // Une source en panne ne prive pas des suggestions de l'autre.
+      const [towns, others] = await Promise.all([communes(q).catch(() => []), geocode(q, 5).catch(() => [])]);
+      const features = [...towns, ...others.filter((f) => f.properties.type !== 'municipality' || !towns.some((t) => t.properties.citycode === f.properties.citycode))];
+      // Une réponse en retard ne remplace pas la saisie en cours.
+      if ($('address').value.trim() === q && document.activeElement === $('address')) suggest(features);
+    } catch { /* pas de suggestions : Entrée géocode toujours */ }
+  }, 250);
+};
+$('address').onblur = () => { clearTimeout(typing); suggest([]); };
+$('address').onkeydown = (e) => {
+  const { key } = e;
+  if (key === 'Escape') return suggest([]);
+  if (found.length && (key === 'ArrowDown' || key === 'ArrowUp')) {
+    e.preventDefault();
+    const n = found.length;
+    active = key === 'ArrowDown' ? (active + 1) % n : (Math.max(active, 0) - 1 + n) % n;
+    [...$('suggest').children].forEach((li, i) => li.setAttribute('aria-selected', i === active));
+    $('address').setAttribute('aria-activedescendant', 'suggest-' + active);
+    return;
+  }
+  if (key !== 'Enter') return;
+  e.preventDefault();
+  clearTimeout(typing);
+  if (found[active]) place(found[active]); else { suggest([]); locate(); }
+};
+
+// Pictos des liens de fiche (tracés statiques, jamais de donnée externe dedans).
+const ICONS = {
+  maps: '<path d="M12 21s-7-6.3-7-11.5a7 7 0 0 1 14 0C19 14.7 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/>',
+  search: '<circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.4-4.4"/>',
+  facebook: '<path d="M15 3h-2.5A3.5 3.5 0 0 0 9 6.5V10H6.5v3.5H9V21h3.5v-7.5H15l.5-3.5h-3V7a1 1 0 0 1 1-1H15z"/>',
+  instagram: '<rect x="3.5" y="3.5" width="17" height="17" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.2" cy="6.8" r=".6" fill="currentColor"/>',
+  web: '<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.5 2.6 3.5 5.4 3.5 8.5s-1 5.9-3.5 8.5c-2.5-2.6-3.5-5.4-3.5-8.5s1-5.9 3.5-8.5z"/>',
+  mail: '<rect x="3.5" y="5.5" width="17" height="13" rx="2"/><path d="m4 7 8 6 8-6"/>',
+  phone: '<path d="M5 4h3.5l1.5 4-2 1.5a11 11 0 0 0 5.5 5.5l1.5-2 4 1.5V18a2 2 0 0 1-2 2A15 15 0 0 1 3 6a2 2 0 0 1 2-2z"/>',
+  check: '<path d="M12 3 4.5 6v5.5c0 4.6 3.2 8.4 7.5 9.5 4.3-1.1 7.5-4.9 7.5-9.5V6L12 3z"/><path d="m8.8 12 2.2 2.2 4.2-4.4"/>',
+};
+// Sans texte : bouton picto seul (label en infobulle). Couleur en style inline : la règle Leaflet sur les liens du popup l'emporterait sur une classe.
+function link(icon, color, href, label, text) {
+  const a = el('a', 'inline-flex h-8 items-center gap-1.5 rounded-lg text-xs font-semibold transition hover:brightness-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 ' + (text ? 'px-2.5' : 'w-8 justify-center'));
+  a.style.cssText = `color:${color};background:color-mix(in srgb, ${color} 12%, white)`;
+  a.innerHTML = `<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" class="shrink-0">${ICONS[icon]}</svg>`;
+  if (text) a.append(el('span', 'truncate', text));
+  a.href = href; a.title = label; a.setAttribute('aria-label', label);
+  if (/^https?:/.test(href)) { a.target = '_blank'; a.rel = 'noopener'; }
+  a.onclick = (e) => e.stopPropagation();
+  return a;
+}
+
+// Popup : picto seul, la valeur en infobulle native, le clic la copie. Pas de texte au survol : le bouton s'élargirait et clignoterait.
+function copyLink(icon, color, value, what) {
+  const b = el('button', 'inline-flex h-8 w-8 items-center justify-center rounded-lg text-xs font-semibold transition hover:brightness-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500');
+  b.type = 'button';
+  b.style.cssText = `color:${color};background:color-mix(in srgb, ${color} 12%, white)`;
+  b.innerHTML = `<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" class="shrink-0">${ICONS[icon]}</svg>`;
+  b.title = `${value} (cliquer pour copier)`;
+  b.setAttribute('aria-label', `Copier ${what} ${value}`);
+  b.onclick = async (e) => {
+    e.stopPropagation();
+    try { await navigator.clipboard.writeText(value); toast(`${what[0].toUpperCase() + what.slice(1)} copié : ${value}`, 'success'); }
+    catch { toast('Copie impossible : le navigateur l\'a refusée.', 'error'); }
+  };
+  return b;
+}
+
+// Fiche d'un commerce : la même dans la liste et dans le popup de la carte (popup = true : contacts en picto à copier).
+function card(p, popup = false) {
+  const query = encodeURIComponent([p.name, p.address].filter(Boolean).join(' '));
+  const box = el('div', '');
+  const top = el('div', 'flex items-start justify-between gap-2');
+  const title = el('div', 'flex min-w-0 items-start gap-1');
+  title.append(el('strong', 'text-sm font-semibold leading-snug text-slate-900', p.name));
+  top.append(title);
+  const badge = el('span', 'inline-flex shrink-0 items-center gap-1.5 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-700');
+  badge.append(dot(fam(p)), p.category || labels[fam(p)]);
+  badge.title = labels[fam(p)];
+  top.append(badge);
+  box.append(top);
+  if (p.address) box.append(el('div', 'mt-1 text-xs text-slate-500', p.address));
+  if (p.id.startsWith('sirene:')) {
+    const tag = el('div', 'mt-1 inline-block rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700', 'Registre SIRENE');
+    tag.title = 'Trouvé dans le registre des entreprises, absent d\'Overture : pas de contact connu, site à vérifier.';
+    box.append(tag);
+  }
+
+  const links = el('div', 'mt-3 flex flex-wrap gap-1.5');
+  links.append(
+    link('maps', '#16a34a', `https://www.google.com/maps/search/?api=1&query=${query}`, 'Google Maps'),
+    link('search', '#2563eb', `https://www.google.com/search?q=${query}`, 'Recherche Google'),
+  );
+  // Les données sont externes : on n'accepte que des liens http(s).
+  if (/^https?:\/\//.test(p.social || '')) {
+    const net = /facebook/.test(p.social) ? ['facebook', '#1877f2', 'Facebook'] : /instagram/.test(p.social) ? ['instagram', '#db2777', 'Instagram'] : ['web', '#7c3aed', 'Réseau social'];
+    links.append(link(net[0], net[1], p.social, net[2]));
+  }
+  if (popup) {
+    if (p.email) links.append(copyLink('mail', '#d97706', p.email, 'l\'email'));
+    if (p.phone) links.append(copyLink('phone', '#0d9488', p.phone, 'le numéro'));
+  } else {
+    if (p.email) links.append(link('mail', '#d97706', 'mailto:' + encodeURIComponent(p.email).replace('%40', '@'), 'Écrire à ' + p.email, p.email));
+    if (p.phone) links.append(link('phone', '#0d9488', 'tel:' + p.phone.replace(/[^+\d]/g, ''), 'Appeler le ' + p.phone, p.phone));
+  }
+  // Double vérification gratuite (domaine de l'email, domaine deviné, OpenStreetMap) : un site trouvé retire le commerce.
+  // La couleur dit l'état : gris = jamais vérifié, vert = vérifié, ambre = partiel (OSM n'a pas répondu).
+  const verify = el('button', `grid h-5 w-5 shrink-0 place-items-center rounded transition-colors hover:bg-indigo-50 hover:text-indigo-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 ${p.checked ? (p.partial ? 'text-amber-500' : 'text-emerald-600') : 'text-slate-400'}`);
+  verify.type = 'button';
+  verify.innerHTML = `<svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS.check}</svg>`;
+  verify.title = p.checked ? (p.partial ? 'Revérifier : OpenStreetMap ne répondait pas la dernière fois' : `Vérifié le ${p.checked.split('-').reverse().join('/')}, cliquer pour revérifier`) : 'Vérifier qu\'il n\'a pas de site';
+  verify.setAttribute('aria-label', verify.title);
+  verify.dataset.verify = p.id;
+  if (checking.has(p.id)) spin(verify);
+  verify.onclick = async (e) => {
+    e.stopPropagation();
+    const t = toast(`Vérification de ${p.name}…`, 'loading');
+    const r = await checkSite(p);
+    if (!r) { t.close(); return refresh(); } // l'erreur a déjà son toast
+    await refresh();
+    t.update(r.url ? `${p.name} a un site (${r.url}) : retiré de la liste.` : `${p.name} : aucun site trouvé` + (r.partial ? ', OpenStreetMap n\'a pas répondu.' : '.'), r.url || !r.partial ? 'success' : 'info');
+  };
+  title.append(verify);
+  box.append(links);
+  return box;
+}
+
+// Renvoie le résultat, ou null si la requête a échoué (message déjà affiché).
+async function checkSite(p) {
+  checking.add(p.id);
+  spinVerify(p.id);
+  try {
+    const res = await fetch('/api/check/' + encodeURIComponent(p.id), { method: 'POST' });
+    const r = await res.json();
+    if (!res.ok) throw new Error(r.error);
+    return r;
+  } catch (err) {
+    setStatus(err.message || 'Vérification impossible.', true);
+    return null;
+  } finally {
+    checking.delete(p.id);
+  }
+}
+
+// Recherche dans les résultats : tous les mots tapés doivent se trouver dans la fiche, sans tenir compte des accents ni de la casse.
+const plain = (s) => s.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+const visible = () => {
+  const words = plain($('search').value).split(/\s+/).filter(Boolean);
+  return places.filter((p) => {
+    if (hidden.has(fam(p)) || [...need].some((f) => !p[f])) return false;
+    const text = plain([p.name, p.address, p.category, labels[fam(p)], p.phone, p.email].filter(Boolean).join(' '));
+    return words.every((w) => text.includes(w));
+  });
+};
+let searchTimer;
+$('search').oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(render, 150); };
+
+// Infos de contact exigées : liste, carte et export de la vue. Mêmes pictos et couleurs que sur les fiches.
+const CONTACTS = { phone: ['phone', '#0d9488', 'Téléphone'], email: ['mail', '#d97706', 'Email'], social: ['web', '#7c3aed', 'Réseau social'] };
+const need = new Set(prefs.need);
+$('needs').replaceChildren(...Object.entries(CONTACTS).map(([f, [icon, color, label]]) => {
+  const b = el('button', 'grid h-[38px] w-9 place-items-center rounded-xl border border-slate-200 bg-white text-slate-400 shadow-sm transition hover:text-slate-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500');
+  b.type = 'button'; b.title = 'Seulement avec ' + label.toLowerCase(); b.setAttribute('aria-label', b.title);
+  b.innerHTML = `<svg aria-hidden="true" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${ICONS[icon]}</svg>`;
+  const paint = () => {
+    const on = need.has(f);
+    b.setAttribute('aria-pressed', on);
+    b.style.cssText = on ? `color:${color};border-color:${color};background:color-mix(in srgb, ${color} 12%, white)` : '';
+  };
+  b.onclick = () => { need.has(f) ? need.delete(f) : need.add(f); paint(); remember({ need: [...need] }); render(); };
+  paint();
+  return b;
+}));
+
+// Les marqueurs survivent aux rechargements de la vue : un popup ouvert ne se ferme pas quand la carte bouge.
+const byId = new Map();
+let listQueue = [], listShown = 0, listKey = '', listSig = '';
+const listEnd = el('li', 'h-px');
+function more(n = 50) {
+  for (const p of listQueue.splice(0, n)) {
+    listShown++;
+    const li = el('li', 'cursor-pointer rounded-2xl border border-slate-100 bg-white p-3.5 shadow-sm transition hover:border-indigo-200 hover:shadow-md');
+    li.append(card(p));
+    li.onclick = () => { map.setView([p.lat, p.lon], 18); byId.get(p.id)?.openPopup(); };
+    listEnd.before(li);
+  }
+}
+new IntersectionObserver((e) => { if (e[0].isIntersecting && listQueue.length) more(); }, { root: $('list'), rootMargin: '400px' }).observe(listEnd);
+function render() {
+  const shown = visible();
+  // Mêmes filtres et mêmes fiches qu'au dernier affichage (petit déplacement de carte) : rien à refaire.
+  const key = [$('search').value, ...hidden, '|', ...need].join(',');
+  const sig = shown.map((p) => p.id + p.checked + p.partial).join();
+  $('csv').hidden = !shown.length;
+  $('verifyAll').hidden = !shown.length;
+  setStatus(!places.length ? 'Aucun commerce enregistré dans cette vue : place un point et lance un scan.'
+    : `${shown.length} commerces sans site dans cette vue` + (shown.length < places.length ? ` (${places.length} avant filtres).` : '.') + (truncated ? ' Affichage limité aux 1000 plus fiables : zoome pour tout voir.' : ''));
+  if (key === listKey && sig === listSig) return;
+  const same = key === listKey;
+  listKey = key;
+  listSig = sig;
+  const ids = new Set(shown.map((p) => p.id));
+  for (const [id, marker] of byId) if (!ids.has(id)) { markers.removeLayer(marker); byId.delete(id); }
+  for (const p of shown) {
+    if (byId.has(p.id)) continue;
+    const marker = L.circleMarker([p.lat, p.lon], { radius: 7, color: '#fff', weight: 2, fillColor: COLORS[fam(p)], fillOpacity: 1 })
+      // pr-3 : laisse la place à la croix de fermeture du popup.
+      .bindPopup(() => { const c = card(places.find((x) => x.id === p.id) ?? p, true); c.classList.add('pr-3'); return c; }, { minWidth: 240, maxWidth: 320, autoPanPaddingTopLeft: pad().tl, autoPanPaddingBottomRight: pad().br })
+      .addTo(markers);
+    // Le popup reste ouvert après le survol : on peut y cliquer les liens.
+    marker.on('mouseover', () => marker.openPopup());
+    byId.set(p.id, marker);
+  }
+  // Liste par paquets au fil du défilement : 1000 fiches d'un coup figent la page à chaque déplacement.
+  // Filtres inchangés (carte déplacée, fiche vérifiée) : on garde la position de lecture.
+  const top = same ? $('list').scrollTop : 0;
+  const count = same ? Math.max(listShown, 50) : 50;
+  listQueue = shown.slice();
+  listShown = 0;
+  $('list').replaceChildren(listEnd);
+  more(count);
+  $('list').scrollTop = top;
+}
+
+$('form').onsubmit = async (e) => {
+  e.preventDefault();
+  if (!center) return;
+  const zone = $('form').zone.value;
+  if (zone !== 'radius' && !geo?.citycode) return setStatus('Commune introuvable pour ce point : place une adresse.', true);
+  if (zone === 'street' && !geo.street) return setStatus('Pas de rue connue pour ce point : place une adresse précise.', true);
+  $('scan').disabled = true;
+  $('scan').textContent = 'Scan en cours…';
+  // shortcut: rue/ville ont un contour connu seulement après le scan, on pulse sur un rayon fixe autour du point.
+  const reach = zone === 'radius' ? +$('radius').value : zone === 'street' ? 800 : 3000;
+  // Rendu SVG imposé (la carte est en canvas) pour pouvoir animer les anneaux en CSS.
+  const sonar = L.layerGroup([0, 0.8, 1.6].map((delay) => L.circle(center, { radius: reach, renderer: sonarRenderer, className: 'sonar', color: '#6366f1', weight: 2, fillColor: '#818cf8', fillOpacity: 0.15, interactive: false })
+    .on('add', (e) => { e.target.getElement().style.animationDelay = delay + 's'; }))).addTo(map);
+  const t = toast('Scan en cours : Overture puis registre SIRENE, quelques secondes…', 'loading');
+  try {
+    const res = await fetch('/api/scan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(zone === 'radius' ? { lat: center.lat, lon: center.lng, radius: +$('radius').value } : { zone, citycode: geo.citycode, street: geo.street }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    showArea(data.area);
+    await refresh();
+    const { sirene } = data;
+    t.update(`Scan enregistré : ${data.count} commerces` + (sirene.count ? ` + ${sirene.count} du registre SIRENE.` : '.')
+      + (data.truncated || sirene.truncated ? ' Résultats limités : réduis la zone pour tout avoir.' : ''), 'success');
+    if (sirene.error) toast(sirene.error, 'error');
+  } catch (err) {
+    t.update(err.message || 'Le scan a échoué.', 'error');
+  }
+  sonar.remove();
+  $('scan').disabled = false;
+  $('scan').textContent = 'Lancer le scan';
+};
+
+// Vérification en lot des commerces affichés : 3 à la fois pour ménager les serveurs gratuits (OpenStreetMap surtout).
+$('verifyAll').onclick = async () => {
+  const todo = visible().filter((p) => !p.checked || p.partial);
+  if (!todo.length) return toast('Tous les commerces affichés sont déjà vérifiés.');
+  $('verifyAll').disabled = true;
+  let done = 0, found = 0;
+  const t = toast(`Vérification de ${todo.length} commerces…`, 'loading');
+  const worker = async () => {
+    for (let p; (p = todo.shift());) {
+      const r = await checkSite(p);
+      if (r?.url) found++;
+      t.update(`Vérification : ${++done} faits, ${todo.length} restants, ${found} sites trouvés…`, 'loading');
+    }
+  };
+  await Promise.all([worker(), worker(), worker()]);
+  await refresh();
+  t.update(`Vérification terminée : ${found} sites trouvés sur ${done} commerces, retirés de la liste.`, 'success');
+  $('verifyAll').disabled = false;
+};
+
+// L'export est fait par le serveur depuis la base : toute la vue, sans la limite d'affichage.
+$('csv').onclick = () => { location.href = `/api/export.csv?bbox=${map.getBounds().toBBoxString()}&hide=${[...hidden].join(',')}&has=${[...need].join(',')}`; };
+
+// Fenêtre d'export : toute la base (pas seulement la vue), filtrée par région, département, ville et type.
+// groups = contenu de la base par département, ville et famille ; depts = noms officiels des départements et de leur région.
+let groups = [], depts = {};
+const exFams = () => [...$('exFamilies').querySelectorAll('input')];
+const exHas = () => [...$('exHas').querySelectorAll('input:checked')].map((i) => i.value);
+function exFill(select, all, pairs) {
+  const options = [...new Map(pairs)].sort((a, b) => a[1].localeCompare(b[1], 'fr'));
+  select.replaceChildren(...[['', all], ...options].map(([value, text]) => { const o = el('option', '', text); o.value = value; return o; }));
+}
+// Chaque liste ne propose que ce qui existe sous le choix du niveau au-dessus ; level = niveau qui vient de changer.
+function exUpdate(level) {
+  let rows = groups;
+  if (level < 1) exFill($('exRegion'), 'Toutes les régions', rows.filter((g) => depts[g.dept]).map((g) => [depts[g.dept].region.code, depts[g.dept].region.nom]));
+  if ($('exRegion').value) rows = rows.filter((g) => depts[g.dept]?.region.code === $('exRegion').value);
+  if (level < 2) exFill($('exDept'), 'Tous les départements', rows.filter((g) => g.dept).map((g) => [g.dept, `${g.dept} · ${depts[g.dept]?.nom ?? 'Département ' + g.dept}`]));
+  if ($('exDept').value) rows = rows.filter((g) => g.dept === $('exDept').value);
+  if (level < 3) exFill($('exCity'), $('exDept').value ? 'Toutes les villes' : 'Choisis d\'abord un département', $('exDept').value ? rows.filter((g) => g.city).map((g) => [g.city, g.city]) : []);
+  $('exCity').disabled = !$('exDept').value;
+  if ($('exCity').value) rows = rows.filter((g) => g.city === $('exCity').value);
+  const kept = new Set(exFams().filter((i) => i.checked).map((i) => i.value));
+  const has = exHas();
+  const n = rows.reduce((sum, g) => sum + (kept.has(g.family) && has.every((f) => g[f]) ? g.n : 0), 0);
+  $('exCount').textContent = n ? `${n} commerces à exporter` : 'Aucun commerce pour ces filtres.';
+  $('exGo').disabled = !n;
+}
+const exChanged = (level) => { exUpdate(level); remember({ ex: { region: $('exRegion').value, dept: $('exDept').value, city: $('exCity').value } }); };
+$('exRegion').onchange = () => exChanged(1);
+$('exDept').onchange = () => exChanged(2);
+$('exCity').onchange = () => exChanged(3);
+// Listes reconstruites, puis derniers choix remis s'ils existent encore dans la base.
+function exRestore() {
+  exUpdate(0);
+  ['Region', 'Dept', 'City'].forEach((name, i) => { $('ex' + name).value = prefs.ex?.[name.toLowerCase()] ?? ''; exUpdate(i + 1); });
+}
+
+let deptNames;
+$('exportOpen').onclick = async () => {
+  try {
+    const res = await fetch('/api/export/groups');
+    if (!res.ok) throw new Error();
+    groups = await res.json();
+  } catch { return setStatus('Lecture de la base impossible.', true); }
+  if (!groups.length) return setStatus('Rien à exporter : la base est vide, lance un scan.', true);
+  $('exFamilies').replaceChildren(...Object.keys(COLORS).filter((f) => groups.some((g) => g.family === f)).map((f) => {
+    const box = el('input', 'accent-indigo-600');
+    box.type = 'checkbox'; box.value = f; box.checked = !prefs.exOff?.includes(f);
+    box.onchange = () => { remember({ exOff: exFams().filter((i) => !i.checked).map((i) => i.value) }); exUpdate(3); };
+    const label = el('label', 'flex items-center gap-1.5 text-xs font-medium text-slate-700');
+    label.append(box, dot(f), labels[f] ?? f);
+    return label;
+  }));
+  $('exHas').replaceChildren(...Object.entries(CONTACTS).map(([f, [icon, color, label]]) => {
+    const box = el('input', 'accent-indigo-600');
+    box.type = 'checkbox'; box.value = f; box.checked = !!prefs.exHas?.includes(f);
+    box.onchange = () => { remember({ exHas: exHas() }); exUpdate(3); };
+    const tag = el('label', 'flex items-center gap-1.5 text-xs font-medium text-slate-700');
+    tag.innerHTML = `<svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[icon]}</svg>`;
+    tag.prepend(box); tag.append(label);
+    return tag;
+  }));
+  exRestore();
+  $('exportDialog').showModal();
+  // La fenêtre s'ouvre sans attendre l'annuaire officiel : sans lui, pas de choix par région et les départements s'affichent par leur numéro.
+  deptNames ??= fetch('https://geo.api.gouv.fr/departements?fields=nom,code,region', { signal: AbortSignal.timeout(8000) })
+    .then((r) => r.json())
+    .then((list) => { depts = Object.fromEntries(list.map((d) => [d.code, d])); exRestore(); })
+    .catch(() => { deptNames = null; });
+};
+
+$('exGo').onclick = () => {
+  const q = new URLSearchParams();
+  const region = $('exRegion').value;
+  if ($('exDept').value) q.set('depts', $('exDept').value);
+  else if (region) q.set('depts', Object.values(depts).filter((d) => d.region.code === region).map((d) => d.code).join(','));
+  if ($('exCity').value) q.set('city', $('exCity').value);
+  if (exHas().length) q.set('has', exHas().join(','));
+  if (exFams().some((i) => !i.checked)) q.set('families', exFams().filter((i) => i.checked).map((i) => i.value).join(','));
+  location.href = '/api/export.csv?' + q;
+  $('exportDialog').close();
+};
+</script>
+<div id="toasts" aria-live="polite" class="pointer-events-none fixed inset-x-4 bottom-4 z-[1000] flex flex-col items-center gap-2"></div>
+</body>
+</html>

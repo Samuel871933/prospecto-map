@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "prospecto": { "command": "node", "args": ["mcp.js"] }
+  }
+}
