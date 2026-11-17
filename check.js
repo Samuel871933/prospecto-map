@@ -1,32 +1,12 @@
 // Double vérification « sans site » avec des sources gratuites, sans clé :
 // 1. domaine de l'email s'il n'est pas un webmail, 2. domaine deviné depuis le nom, 3. OpenStreetMap (Overpass).
-const dns = require('dns').promises;
-const net = require('net');
+import { promises as dns } from 'node:dns';
+import net from 'node:net';
+import { ownDomain, guessDomains, viaOsm, compact } from './docs/lib/check.js';
 
-const OVERPASS = ['https://overpass-api.de/api/interpreter', 'https://overpass.private.coffee/api/interpreter', 'https://maps.mail.ru/osm/tools/overpass/api/interpreter'];
 const UA = 'prospecto-patronum/1.0 (verification de site)';
-const WEBMAILS = new Set(['gmail.com', 'googlemail.com', 'hotmail.com', 'hotmail.fr', 'outlook.com', 'outlook.fr', 'live.com', 'live.fr', 'msn.com',
-  'yahoo.com', 'yahoo.fr', 'icloud.com', 'me.com', 'aol.com', 'aol.fr', 'gmx.fr', 'gmx.com', 'protonmail.com', 'proton.me', 'orange.fr', 'wanadoo.fr',
-  'free.fr', 'sfr.fr', 'neuf.fr', 'laposte.net', 'bbox.fr', 'numericable.fr', 'club-internet.fr', 'cegetel.net', 'aliceadsl.fr', 'nordnet.fr']);
-const ARTICLES = new Set(['le', 'la', 'les', 'l', 'au', 'aux', 'chez']);
 // Page de domaine parqué ou à vendre : elle répète souvent le nom du domaine, donc le nom du commerce.
 const PARKED = /domain (is )?for sale|buy this domain|domaine (est )?(à|a) vendre|ce domaine|parked|sedoparking|domain parking|nom de domaine.*(disponible|réservé)/i;
-
-const { plain } = require('./sirene');
-const compact = (s) => plain(s).replace(/[^a-z0-9]/g, '');
-
-function ownDomain(email) {
-  const d = plain(email).split('@')[1]?.trim();
-  return d && /^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(d) && !WEBMAILS.has(d) ? d : null;
-}
-
-// « Le Coin Pizza » → lecoinpizza, le-coin-pizza, coinpizza ; en .fr et .com.
-function guessDomains(name) {
-  const words = plain(name).replace(/&/g, ' et ').split(/[^a-z0-9]+/).filter(Boolean);
-  const bare = words[0] && ARTICLES.has(words[0]) ? words.slice(1) : words;
-  const slugs = new Set([words.join(''), words.join('-'), bare.join('')].filter((s) => s.length >= 4 && s.length <= 63));
-  return [...slugs].flatMap((s) => [s + '.fr', s + '.com']);
-}
 
 // La page parle bien de ce commerce : son nom (assez long pour ne pas matcher par hasard) ou son téléphone, hors mention du domaine lui-même.
 function pageMatches(html, host, place) {
@@ -90,34 +70,10 @@ async function viaGuess(place) {
   return pages.find(Boolean) ?? null;
 }
 
-// Overpass en panne : on ne le réinterroge pas pendant 5 min, sinon chaque vérification attendrait ses délais.
-let osmDownUntil = 0;
-// Objet OSM du même nom à moins de 80 m, avec un site renseigné. Lève une erreur si Overpass ne répond pas : ce n'est pas un « non ».
-async function viaOsm(place) {
-  const q = `[out:json][timeout:15];nwr(around:80,${+place.lat},${+place.lon})[name]["website"];out tags;nwr(around:80,${+place.lat},${+place.lon})[name]["contact:website"];out tags;`;
-  if (Date.now() < osmDownUntil) throw new Error('OpenStreetMap indisponible');
-  let data;
-  // Serveurs publics gratuits, souvent saturés : la file d'attente d'overpass-api.de dépasse souvent 30 s, d'où le long délai.
-  for (const host of OVERPASS) {
-    try {
-      const res = await fetch(host, {
-        method: 'POST', headers: { 'User-Agent': UA, 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: 'data=' + encodeURIComponent(q), signal: AbortSignal.timeout(40000),
-      });
-      if (res.ok) { data = await res.json(); break; }
-    } catch { /* serveur suivant */ }
-  }
-  if (!data) { osmDownUntil = Date.now() + 5 * 60000; throw new Error('OpenStreetMap indisponible'); }
-  const name = compact(place.name);
-  const hit = data.elements.find((e) => { const n = compact(e.tags.name); return n && (n.includes(name) || name.includes(n)); });
-  const url = hit && (hit.tags.website || hit.tags['contact:website']);
-  return /^https?:\/\//.test(url ?? '') ? url : null;
-}
-
 // { url, source } si un site est trouvé, sinon { url: null, partial } : partial = une source n'a pas répondu, à revérifier plus tard.
 async function checkPlace(place) {
   let partial = false;
-  for (const [source, fn] of [['email', viaEmail], ['domaine', viaGuess], ['osm', viaOsm]]) {
+  for (const [source, fn] of [['email', viaEmail], ['domaine', viaGuess], ['osm', (p) => viaOsm(p, { 'User-Agent': UA })]]) {
     try {
       const url = await fn(place);
       if (url) return { url, source, partial: false };
@@ -126,4 +82,4 @@ async function checkPlace(place) {
   return { url: null, source: null, partial };
 }
 
-module.exports = { checkPlace, ownDomain, guessDomains, pageMatches, isPrivate };
+export { checkPlace, ownDomain, guessDomains, pageMatches, isPrivate };

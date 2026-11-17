@@ -112,4 +112,4 @@ async function sireneRows(scan) {
   return { rows: toRows(results, scan), truncated: first.total_pages > PAGE_MAX };
 }
 
-module.exports = { sireneRows, toRows, isKnown, codesFor, plain };
+export { sireneRows, toRows, isKnown, codesFor, plain };

@@ -1,30 +1,37 @@
-// Serveur MCP (stdio) : pilote prospecto depuis Claude. Il passe par l'API HTTP de server.js,
-// qui doit tourner (npm start) : DuckDB n'accepte qu'un seul processus sur le fichier de base.
-const fs = require('fs');
-const path = require('path');
-const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
-const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
-const { z } = require('zod');
+#!/usr/bin/env node
+// Serveur MCP (stdio) : pilote prospecto depuis Claude, sans serveur web ni base de fichier.
+// Les scans vivent dans la mémoire de ce processus (rien n'est enregistré) : ils disparaissent quand Claude le ferme.
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { z } from 'zod';
+import { DuckDBInstance } from '@duckdb/node-api';
+import { FAMILIES, newStore, runScan, exportGroups, exportRows, toCsv, listPlaces, saveCheck } from './docs/lib/prospecto.js';
+import { plain } from './docs/lib/sirene.js';
+import { checkPlace } from './check.js';
 
-const API = process.env.PROSPECTO_URL || `http://127.0.0.1:${process.env.PORT || 3000}`;
-// Même liste blanche que le serveur ; le require n'ouvre pas la base (ouverte au premier appel).
-const Family = z.enum(Object.keys(require('./server').FAMILIES));
-const { plain } = require('./sirene');
+const Family = z.enum(Object.keys(FAMILIES));
 // Noms de ville comparés sans accents, casse, tirets ni apostrophes.
 const key = (s) => plain(s).replace(/[-’']/g, ' ').trim();
 
-async function api(route, init) {
-  let res;
+const store = newStore();
+// Base en mémoire ouverte au premier scan ; en cas d'échec on repart de zéro au suivant.
+let db;
+const query = async (sql) => {
+  db ??= (async () => {
+    const conn = await (await DuckDBInstance.create(':memory:')).connect();
+    await conn.run('INSTALL httpfs; LOAD httpfs;');
+    return conn;
+  })();
   try {
-    res = await fetch(API + route, { ...init, headers: { 'content-type': 'application/json' }, signal: AbortSignal.timeout(600000) });
-  } catch {
-    throw new Error(`Serveur prospecto injoignable sur ${API} : lance « npm start » dans le projet.`);
+    return (await (await db).runAndReadAll(sql)).getRowObjectsJson();
+  } catch (e) {
+    db = undefined;
+    throw e;
   }
-  const type = res.headers.get('content-type') ?? '';
-  const body = type.includes('json') ? await res.json() : await res.text();
-  if (!res.ok) throw new Error(body.error ?? `Erreur ${res.status}`);
-  return body;
-}
+};
 
 // Nom de ville → code INSEE. Plusieurs communes du même nom : on renvoie la liste pour que Claude choisisse.
 async function resolveCity({ city, postcode }) {
@@ -62,7 +69,7 @@ const tool = (fn) => async (args) => {
 const server = new McpServer({ name: 'prospecto', version: '1.0.0' });
 
 server.registerTool('scan_city', {
-  description: 'Scanne une commune française (ou une rue de cette commune) : ajoute en base ses commerces sans site web (Overture + SIRENE). Peut prendre une à plusieurs minutes.',
+  description: 'Scanne une commune française (ou une rue de cette commune) : ajoute en mémoire ses commerces sans site web (Overture + SIRENE). Peut prendre une à plusieurs minutes.',
   inputSchema: {
     city: z.string().optional().describe('Nom de la commune, ex. "Brive-la-Gaillarde"'),
     citycode: z.string().optional().describe('Code INSEE, prioritaire sur city (à utiliser si le nom est ambigu)'),
@@ -74,7 +81,7 @@ server.registerTool('scan_city', {
   if (!citycode && !city) throw new Error('Donne city ou citycode');
   const commune = citycode ? { code: citycode } : await resolveCity({ city, postcode });
   const body = street ? { zone: 'street', citycode: commune.code, street, families } : { zone: 'city', citycode: commune.code, families };
-  const { area, ...result } = await api('/api/scan', { method: 'POST', body: JSON.stringify(body) });
+  const { area, ...result } = await runScan(store, body, query);
   return { commune: commune.nom ?? commune.code, citycode: commune.code, ...result };
 }));
 
@@ -86,18 +93,18 @@ server.registerTool('scan_radius', {
     families: z.array(Family).optional(),
   },
 }, tool(async (args) => {
-  const { area, ...result } = await api('/api/scan', { method: 'POST', body: JSON.stringify({ families: [], ...args }) });
+  const { area, ...result } = await runScan(store, { families: [], ...args }, query);
   return result;
 }));
 
 server.registerTool('stats', {
-  description: 'Contenu de la base : nombre de prospects par département, ville et famille, avec ou sans téléphone/email/réseau social. À consulter avant un export.',
+  description: 'Contenu de la mémoire (lieux scannés pendant cette session) : nombre de prospects par département, ville et famille, avec ou sans téléphone/email/réseau social. À consulter avant un export.',
   inputSchema: {
     dept: z.string().optional().describe('Ne garder que ce département, ex. "19"'),
     city: z.string().optional().describe('Ne garder que cette ville'),
   },
 }, tool(async ({ dept, city }) => {
-  const rows = (await api('/api/export/groups')).filter((r) => (!dept || r.dept === dept) && (!city || key(r.city) === key(city)));
+  const rows = exportGroups(store).filter((r) => (!dept || r.dept === dept) && (!city || key(r.city) === key(city)));
   // Regroupement par ville et famille : les lignes brutes (une par combinaison de contacts) seraient trop longues.
   const out = {};
   for (const r of rows) {
@@ -109,7 +116,7 @@ server.registerTool('stats', {
 }));
 
 server.registerTool('export', {
-  description: 'Exporte les prospects filtrés en CSV (format Excel FR, séparateur ;). Avec save_to, écrit le fichier et ne renvoie qu\'un aperçu.',
+  description: 'Exporte les prospects scannés pendant cette session, filtrés en CSV (format Excel FR, séparateur ;). Avec save_to, écrit le fichier et ne renvoie qu\'un aperçu.',
   inputSchema: {
     depts: z.array(z.string()).optional().describe('Départements, ex. ["19","24"]'),
     city: z.string().optional(),
@@ -119,13 +126,7 @@ server.registerTool('export', {
     save_to: z.string().optional().describe('Chemin du fichier CSV à écrire'),
   },
 }, tool(async ({ depts, city, families, has, bbox, save_to }) => {
-  const q = new URLSearchParams();
-  if (depts?.length) q.set('depts', depts.join(','));
-  if (families?.length) q.set('families', families.join(','));
-  if (has?.length) q.set('has', has.join(','));
-  if (city) q.set('city', city);
-  if (bbox) q.set('bbox', bbox);
-  const csv = await api('/api/export.csv?' + q);
+  const csv = toCsv(exportRows(store, { depts, city, families, has, bbox }));
   const lines = csv.split('\r\n');
   if (!save_to) return csv;
   const file = safeCsvPath(save_to);
@@ -136,13 +137,20 @@ server.registerTool('export', {
 server.registerTool('check_place', {
   description: 'Double vérification qu\'un commerce n\'a vraiment pas de site (email, domaines devinés, OSM). Un site trouvé le retire des exports. L\'id vient de list_places.',
   inputSchema: { id: z.string() },
-}, tool(({ id }) => api('/api/check/' + encodeURIComponent(id), { method: 'POST' })));
+}, tool(async ({ id }) => {
+  const row = store.places.get(id);
+  if (!row) throw new Error('Commerce introuvable : lance d\'abord un scan');
+  const result = await checkPlace(row);
+  saveCheck(store, id, result);
+  return result;
+}));
 
 server.registerTool('list_places', {
-  description: 'Liste les prospects d\'une zone carte (max 1000), avec leur id, contacts et date de vérification.',
+  description: 'Liste les prospects scannés pendant cette session dans une zone (max 1000), avec leur id, contacts et date de vérification.',
   inputSchema: { bbox: z.string().describe('"ouest,sud,est,nord", ex. "1.50,45.14,1.56,45.18"') },
-}, tool(({ bbox }) => api('/api/places?bbox=' + encodeURIComponent(bbox))));
+}, tool(({ bbox }) => listPlaces(store, bbox)));
 
-if (require.main === module) server.connect(new StdioServerTransport());
+// Lancé directement (aussi via le lien symbolique de npx/bin), pas quand test.js l'importe.
+if (fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) server.connect(new StdioServerTransport());
 
-module.exports = { resolveCity, safeCsvPath };
+export { resolveCity, safeCsvPath };

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Prospecto Patronum</title>
-<link rel="icon" type="image/svg+xml" href="/logo.svg">
+<link rel="icon" type="image/svg+xml" href="logo.svg">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.css" integrity="sha384-Nq6PQ+9vJPvw7U/VfDELyrWoGQMsy0gi6QShhaSrGzkpF5KkM40csg2leky+YMTd" crossorigin="anonymous">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -38,7 +38,7 @@
   <div id="resizer" role="separator" aria-orientation="vertical" aria-label="Largeur du panneau (flèches gauche et droite)" title="Glisser pour élargir le panneau" tabindex="0" class="absolute inset-y-8 right-0 z-10 hidden w-1.5 cursor-col-resize touch-none rounded-full transition hover:bg-indigo-300 focus:bg-indigo-400 focus:outline-none md:block"></div>
 
   <header class="flex items-center gap-3 px-5 pt-5">
-    <img src="/logo.svg" alt="" width="40" height="40" class="h-10 w-10 shrink-0 rounded-xl shadow-lg shadow-indigo-500/30">
+    <img src="logo.svg" alt="" width="40" height="40" class="h-10 w-10 shrink-0 rounded-xl shadow-lg shadow-indigo-500/30">
     <div>
       <h1 class="text-base font-bold leading-tight tracking-tight">Prospecto Patronum</h1>
       <p class="text-xs text-slate-500">Trouve les commerces sans site internet</p>
@@ -109,13 +109,12 @@
     <summary title="Piloter depuis Claude (MCP)" aria-label="Documentation MCP" class="ml-auto grid h-10 w-10 cursor-pointer list-none place-items-center rounded-xl text-[11px] font-bold text-slate-600 hover:bg-slate-100 [&::-webkit-details-marker]:hidden">MCP</summary>
     <div class="absolute right-full top-0 mr-2 rounded-xl border border-slate-200 bg-white/95 pt-3 shadow-md w-72 space-y-2 px-3 pb-3">
       <p class="font-semibold text-slate-900">Piloter Prospecto depuis Claude</p>
-      <p>Le serveur MCP passe par cette appli : garde <code>npm start</code> lancé. Puis, depuis le dossier du projet :</p>
-      <pre class="overflow-x-auto rounded-lg bg-slate-900 p-2 text-[11px] text-slate-100">claude mcp add prospecto -- node "$PWD/mcp.js"</pre>
-      <p>Autre port ou machine : variable <code>PROSPECTO_URL</code> (défaut <code>http://127.0.0.1:3000</code>).</p>
+      <p>Le serveur MCP fonctionne seul, sans cette page (ses scans sont séparés des siens). Installation :</p>
+      <pre class="overflow-x-auto rounded-lg bg-slate-900 p-2 text-[11px] text-slate-100">claude mcp add prospecto -- npx -y github:Samuel871933/prospecto-map</pre>
       <ul class="list-disc space-y-0.5 pl-4">
         <li><b>scan_city</b> : commune ou rue</li>
         <li><b>scan_radius</b> : cercle autour d'un point</li>
-        <li><b>stats</b> : contenu de la base</li>
+        <li><b>stats</b> : contenu des scans</li>
         <li><b>export</b> : CSV filtré (<code>save_to</code>)</li>
         <li><b>list_places</b> : prospects d'une zone</li>
         <li><b>check_place</b> : revérifie l'absence de site</li>
@@ -165,11 +164,15 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.js" integrity="sha384-GfxBM9x46BaAFxtCq39Fxir8fNZ4VDnwgfi6Kzi5/F1tAFsm0amuuV8kd+Pxzuf/" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/@maplibre/maplibre-gl-leaflet@0.1.4/leaflet-maplibre-gl.js" integrity="sha384-tXYNKOHx4T02jMP7YYCtBxPIv1B5gaA5mcVPBzqMp6d7VzWzxJgI2aWF/nJLrQdS" crossorigin="anonymous"></script>
-<script>
+<script type="module">
+import { FAMILIES, newStore, runScan, listPlaces, exportGroups, exportRows, toCsv, saveCheck } from './lib/prospecto.js';
+import { query } from './lib/duckdb.js';
+import { checkInBrowser } from './lib/check.js';
+
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, text) => { const n = document.createElement(tag); n.className = cls; if (text) n.textContent = text; return n; };
 
-// Dernière vue mémorisée : au rechargement on revient au même endroit, les points viennent de la base.
+// Dernière vue mémorisée : au rechargement on revient au même endroit (les résultats, eux, restent dans l'onglet).
 let view = { lat: 46.6, lng: 2.4, zoom: 6 };
 try {
   const v = JSON.parse(localStorage.getItem('view'));
@@ -232,24 +235,31 @@ const dot = (f) => { const d = el('span', 'inline-block h-2.5 w-2.5 shrink-0 rou
 // Filtre d'affichage : familles masquées sur la carte, dans la liste et dans l'export.
 const hidden = new Set(prefs.hidden);
 const CHIP = 'pointer-events-auto inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-slate-200 bg-white/95 px-2.5 py-1 text-xs font-semibold text-slate-700 shadow-md transition hover:border-indigo-300 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 aria-[pressed=false]:bg-white/70 aria-[pressed=false]:text-slate-400 aria-[pressed=false]:line-through';
-let labels = { other: 'Autre' };
-fetch('/api/families').then((r) => r.json()).then((all) => { labels = { ...all, ...labels }; }).catch(() => {}).finally(refresh);
+const labels = { ...FAMILIES, other: 'Autre' };
+// Résultats gardés en mémoire de l'onglet : perdus au rechargement.
+const store = newStore();
 
-// Chargement à la demande : seuls les commerces de la zone visible sont lus dans la base, à chaque déplacement.
+// Un fichier CSV est téléchargé depuis un lien temporaire.
+function download(rows) {
+  const url = URL.createObjectURL(new Blob([toCsv(rows)], { type: 'text/csv;charset=utf-8' }));
+  const a = el('a', '');
+  a.href = url; a.download = 'prospects.csv';
+  document.body.append(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+}
+
+// Seuls les commerces de la zone visible sont lus en mémoire, à chaque déplacement.
 let seq = 0;
 async function refresh() {
   const n = ++seq;
   try {
-    const res = await fetch('/api/places?bbox=' + map.getBounds().toBBoxString());
-    // Un plantage du serveur renvoie une page HTML, pas du JSON.
-    const data = await res.json().catch(() => ({ error: 'Le serveur a renvoyé une erreur, regarde son terminal.' }));
+    const data = listPlaces(store, map.getBounds().toBBoxString());
     if (n !== seq) return; // la carte a encore bougé : cette réponse est périmée
-    if (!res.ok) throw new Error(data.error);
     places = data.places;
     truncated = data.truncated;
     chips();
   } catch (err) {
-    if (n === seq) setStatus(err.message || 'Lecture de la base impossible.', true);
+    if (n === seq) setStatus(err.message || 'Lecture des résultats impossible.', true);
   }
 }
 map.on('moveend', () => {
@@ -572,7 +582,7 @@ function copyLink(icon, color, value, what) {
 
 // Fiche d'un commerce : la même dans la liste et dans le popup de la carte (popup = true : contacts en picto à copier).
 function card(p, popup = false) {
-  const query = encodeURIComponent([p.name, p.address].filter(Boolean).join(' '));
+  const q = encodeURIComponent([p.name, p.address].filter(Boolean).join(' '));
   const box = el('div', '');
   const top = el('div', 'flex items-start justify-between gap-2');
   const title = el('div', 'flex min-w-0 items-start gap-1');
@@ -592,8 +602,8 @@ function card(p, popup = false) {
 
   const links = el('div', 'mt-3 flex flex-wrap gap-1.5');
   links.append(
-    link('maps', '#16a34a', `https://www.google.com/maps/search/?api=1&query=${query}`, 'Google Maps'),
-    link('search', '#2563eb', `https://www.google.com/search?q=${query}`, 'Recherche Google'),
+    link('maps', '#16a34a', `https://www.google.com/maps/search/?api=1&query=${q}`, 'Google Maps'),
+    link('search', '#2563eb', `https://www.google.com/search?q=${q}`, 'Recherche Google'),
   );
   // Les données sont externes : on n'accepte que des liens http(s).
   if (/^https?:\/\//.test(p.social || '')) {
@@ -607,7 +617,7 @@ function card(p, popup = false) {
     if (p.email) links.append(link('mail', '#d97706', 'mailto:' + encodeURIComponent(p.email).replace('%40', '@'), 'Écrire à ' + p.email, p.email));
     if (p.phone) links.append(link('phone', '#0d9488', 'tel:' + p.phone.replace(/[^+\d]/g, ''), 'Appeler le ' + p.phone, p.phone));
   }
-  // Double vérification gratuite (domaine de l'email, domaine deviné, OpenStreetMap) : un site trouvé retire le commerce.
+  // Vérification gratuite depuis le navigateur : un site OpenStreetMap retire le commerce ; un domaine qui existe est seulement « possible ».
   // La couleur dit l'état : gris = jamais vérifié, vert = vérifié, ambre = partiel (OSM n'a pas répondu).
   const verify = el('button', `grid h-5 w-5 shrink-0 place-items-center rounded transition-colors hover:bg-indigo-50 hover:text-indigo-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 ${p.checked ? (p.partial ? 'text-amber-500' : 'text-emerald-600') : 'text-slate-400'}`);
   verify.type = 'button';
@@ -622,9 +632,18 @@ function card(p, popup = false) {
     const r = await checkSite(p);
     if (!r) { t.close(); return refresh(); } // l'erreur a déjà son toast
     await refresh();
-    t.update(r.url ? `${p.name} a un site (${r.url}) : retiré de la liste.` : `${p.name} : aucun site trouvé` + (r.partial ? ', OpenStreetMap n\'a pas répondu.' : '.'), r.url || !r.partial ? 'success' : 'info');
+    t.update(r.url ? `${p.name} a un site (${r.url}) : retiré de la liste.`
+      : r.possible ? `${p.name} : site possible : ${r.possible}, à vérifier.`
+      : `${p.name} : aucun site trouvé` + (r.partial ? ', OpenStreetMap n\'a pas répondu.' : '.'), r.url || !r.partial ? 'success' : 'info');
   };
   title.append(verify);
+  if (p.possible) {
+    const a = el('a', 'inline-flex h-8 items-center truncate rounded-lg bg-amber-50 px-2.5 text-xs font-semibold text-amber-700 hover:brightness-95', `site possible : ${p.possible}`);
+    a.href = `https://${p.possible}`; a.target = '_blank'; a.rel = 'noopener';
+    a.title = 'Ce domaine existe : à vérifier à la main';
+    a.onclick = (e) => e.stopPropagation();
+    links.append(a);
+  }
   box.append(links);
   return box;
 }
@@ -634,9 +653,8 @@ async function checkSite(p) {
   checking.add(p.id);
   spinVerify(p.id);
   try {
-    const res = await fetch('/api/check/' + encodeURIComponent(p.id), { method: 'POST' });
-    const r = await res.json();
-    if (!res.ok) throw new Error(r.error);
+    const r = await checkInBrowser(store.places.get(p.id));
+    saveCheck(store, p.id, r);
     return r;
   } catch (err) {
     setStatus(err.message || 'Vérification impossible.', true);
@@ -697,7 +715,7 @@ function render() {
   const sig = shown.map((p) => p.id + p.checked + p.partial).join();
   $('csv').hidden = !shown.length;
   $('verifyAll').hidden = !shown.length;
-  setStatus(!places.length ? 'Aucun commerce enregistré dans cette vue : place un point et lance un scan.'
+  setStatus(!places.length ? 'Aucun commerce dans cette vue : place un point et lance un scan.'
     : `${shown.length} commerces sans site dans cette vue` + (shown.length < places.length ? ` (${places.length} avant filtres).` : '.') + (truncated ? ' Affichage limité aux 1000 plus fiables : zoome pour tout voir.' : ''));
   if (key === listKey && sig === listSig) return;
   const same = key === listKey;
@@ -739,20 +757,14 @@ $('form').onsubmit = async (e) => {
   // Rendu SVG imposé (la carte est en canvas) pour pouvoir animer les anneaux en CSS.
   const sonar = L.layerGroup([0, 0.8, 1.6].map((delay) => L.circle(center, { radius: reach, renderer: sonarRenderer, className: 'sonar', color: '#6366f1', weight: 2, fillColor: '#818cf8', fillOpacity: 0.15, interactive: false })
     .on('add', (e) => { e.target.getElement().style.animationDelay = delay + 's'; }))).addTo(map);
-  const t = toast('Scan en cours : Overture puis registre SIRENE, quelques secondes…', 'loading');
+  const t = toast('Scan en cours : Overture puis registre SIRENE. Le premier scan charge le moteur (~10 s).', 'loading');
   try {
-    const res = await fetch('/api/scan', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(zone === 'radius' ? { lat: center.lat, lon: center.lng, radius: +$('radius').value } : { zone, citycode: geo.citycode, street: geo.street }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error);
+    const data = await runScan(store, zone === 'radius' ? { lat: center.lat, lon: center.lng, radius: +$('radius').value } : { zone, citycode: geo.citycode, street: geo.street }, query);
     showArea(data.area);
     await refresh();
     const { sirene } = data;
-    t.update(`Scan enregistré : ${data.count} commerces` + (sirene.count ? ` + ${sirene.count} du registre SIRENE.` : '.')
-      + (data.truncated || sirene.truncated ? ' Résultats limités : réduis la zone pour tout avoir.' : ''), 'success');
+    t.update(`Scan terminé : ${data.count} commerces` + (sirene.count ? ` + ${sirene.count} du registre SIRENE.` : '.')
+      + (data.truncated || sirene.truncated ? ' Résultats limités : réduis la zone pour tout avoir.' : '') + ' Résultats gardés dans cet onglet seulement : perdus au rechargement.', 'success');
     if (sirene.error) toast(sirene.error, 'error');
   } catch (err) {
     t.update(err.message || 'Le scan a échoué.', 'error');
@@ -767,26 +779,26 @@ $('verifyAll').onclick = async () => {
   const todo = visible().filter((p) => !p.checked || p.partial);
   if (!todo.length) return toast('Tous les commerces affichés sont déjà vérifiés.');
   $('verifyAll').disabled = true;
-  let done = 0, found = 0;
+  let done = 0, found = 0, possible = 0;
   const t = toast(`Vérification de ${todo.length} commerces…`, 'loading');
   const worker = async () => {
     for (let p; (p = todo.shift());) {
       const r = await checkSite(p);
-      if (r?.url) found++;
-      t.update(`Vérification : ${++done} faits, ${todo.length} restants, ${found} sites trouvés…`, 'loading');
+      if (r?.url) found++; else if (r?.possible) possible++;
+      t.update(`Vérification : ${++done} faits, ${todo.length} restants, ${found} sites trouvés, ${possible} possibles…`, 'loading');
     }
   };
   await Promise.all([worker(), worker(), worker()]);
   await refresh();
-  t.update(`Vérification terminée : ${found} sites trouvés sur ${done} commerces, retirés de la liste.`, 'success');
+  t.update(`Vérification terminée : ${found} sites trouvés (retirés de la liste) et ${possible} possibles à vérifier, sur ${done} commerces.`, 'success');
   $('verifyAll').disabled = false;
 };
 
-// L'export est fait par le serveur depuis la base : toute la vue, sans la limite d'affichage.
-$('csv').onclick = () => { location.href = `/api/export.csv?bbox=${map.getBounds().toBBoxString()}&hide=${[...hidden].join(',')}&has=${[...need].join(',')}`; };
+// Toute la vue, sans la limite d'affichage.
+$('csv').onclick = () => download(exportRows(store, { bbox: map.getBounds().toBBoxString(), hide: [...hidden], has: [...need] }));
 
-// Fenêtre d'export : toute la base (pas seulement la vue), filtrée par région, département, ville et type.
-// groups = contenu de la base par département, ville et famille ; depts = noms officiels des départements et de leur région.
+// Fenêtre d'export : tous les résultats de l'onglet (pas seulement la vue), filtrée par région, département, ville et type.
+// groups = contenu des résultats par département, ville et famille ; depts = noms officiels des départements et de leur région.
 let groups = [], depts = {};
 const exFams = () => [...$('exFamilies').querySelectorAll('input')];
 const exHas = () => [...$('exHas').querySelectorAll('input:checked')].map((i) => i.value);
@@ -814,7 +826,7 @@ const exChanged = (level) => { exUpdate(level); remember({ ex: { region: $('exRe
 $('exRegion').onchange = () => exChanged(1);
 $('exDept').onchange = () => exChanged(2);
 $('exCity').onchange = () => exChanged(3);
-// Listes reconstruites, puis derniers choix remis s'ils existent encore dans la base.
+// Listes reconstruites, puis derniers choix remis s'ils existent encore dans les résultats.
 function exRestore() {
   exUpdate(0);
   ['Region', 'Dept', 'City'].forEach((name, i) => { $('ex' + name).value = prefs.ex?.[name.toLowerCase()] ?? ''; exUpdate(i + 1); });
@@ -822,12 +834,8 @@ function exRestore() {
 
 let deptNames;
 $('exportOpen').onclick = async () => {
-  try {
-    const res = await fetch('/api/export/groups');
-    if (!res.ok) throw new Error();
-    groups = await res.json();
-  } catch { return setStatus('Lecture de la base impossible.', true); }
-  if (!groups.length) return setStatus('Rien à exporter : la base est vide, lance un scan.', true);
+  groups = exportGroups(store);
+  if (!groups.length) return setStatus('Rien à exporter : lance un scan.', true);
   $('exFamilies').replaceChildren(...Object.keys(COLORS).filter((f) => groups.some((g) => g.family === f)).map((f) => {
     const box = el('input', 'accent-indigo-600');
     box.type = 'checkbox'; box.value = f; box.checked = !prefs.exOff?.includes(f);
@@ -855,16 +863,17 @@ $('exportOpen').onclick = async () => {
 };
 
 $('exGo').onclick = () => {
-  const q = new URLSearchParams();
   const region = $('exRegion').value;
-  if ($('exDept').value) q.set('depts', $('exDept').value);
-  else if (region) q.set('depts', Object.values(depts).filter((d) => d.region.code === region).map((d) => d.code).join(','));
-  if ($('exCity').value) q.set('city', $('exCity').value);
-  if (exHas().length) q.set('has', exHas().join(','));
-  if (exFams().some((i) => !i.checked)) q.set('families', exFams().filter((i) => i.checked).map((i) => i.value).join(','));
-  location.href = '/api/export.csv?' + q;
+  const opts = { has: exHas() };
+  if ($('exDept').value) opts.depts = [$('exDept').value];
+  else if (region) opts.depts = Object.values(depts).filter((d) => d.region.code === region).map((d) => d.code);
+  if ($('exCity').value) opts.city = $('exCity').value;
+  if (exFams().some((i) => !i.checked)) opts.families = exFams().filter((i) => i.checked).map((i) => i.value);
+  download(exportRows(store, opts));
   $('exportDialog').close();
 };
+
+refresh(); // en dernier : tout ce que render() utilise est défini
 </script>
 <div id="toasts" aria-live="polite" class="pointer-events-none fixed inset-x-4 bottom-4 z-[1000] flex flex-col items-center gap-2"></div>
 </body>

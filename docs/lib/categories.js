@@ -1,6 +1,6 @@
 // Catégories Overture (basic_category) → français. Liste relevée sur la France, version 2026-10-21.0.
 // Une catégorie absente retombe sur le libellé de sa famille ou sur la valeur brute (voir toPlace).
-module.exports = {
+export default {
   // Restauration
   restaurant: 'Restaurant', casual_eatery: 'Restauration rapide / snack', fast_food_restaurant: 'Fast-food', bar: 'Bar',
   coffee_shop: 'Café', cafe: 'Café', winery: 'Domaine viticole', non_alcoholic_beverage_venue: 'Bar sans alcool',
